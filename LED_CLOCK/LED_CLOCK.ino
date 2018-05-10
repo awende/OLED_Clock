@@ -1,23 +1,34 @@
-//Libraries Needed
-#include <SPI.h>  // Include SPI if you're using SPI
-#include <TimeLib.h>
+//Included in IDE/ESP32 Native Libraries
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <SFE_MicroOLED.h>  // Include the SFE_MicroOLED library
+#include <SPI.h>
 
-const char ssid[] = "************";  // your network SSID (name)
-const char pass[] = "************";  // your network password
+//Need to be downloaded
+#include <SFE_MicroOLED.h>//https://github.com/sparkfun/SparkFun_Micro_OLED_Arduino_Library/tree/V_1.0.0
+#include <DNSServer.h>    //https://github.com/zhouhan0126/DNSServer---esp32
+#include <WebServer.h>    //https://github.com/zhouhan0126/WebServer-esp32
+#include <WiFiManager.h>  //https://github.com/tzapu/WiFiManager
+#include <Timezone.h>     //https://github.com/JChristensen/Timezone
 
-static const char ntpServerName[] = "time.nist.gov";
-const int timeZone = -6;  // Mountain Daylight Time
 
-WiFiUDP Udp;
+
+//Define Daylight Savings Time Rules
+//US Mountain Time Zone
+TimeChangeRule myDST = {"MDT", Second, Sun, Mar, 2, -360};    //Daylight time = UTC - 6 hours
+TimeChangeRule mySTD = {"MST", First, Sun, Nov, 2, -420};     //Standard time = UTC - 7 hours
+Timezone myTZ(myDST, mySTD);
+
+TimeChangeRule *tcr;    //pointer to the time change rule, use to get TZ abbrev
+time_t utc, local;
+
+// NTP Servers:
+static const char ntpServerName[] = "us.pool.ntp.org";
+//static const char ntpServerName[] = "time.nist.gov";
+
+WiFiUDP Udp;                    //Initialize UDP library
 unsigned int localPort = 8888;  // local port to listen for UDP packets
 
-time_t getNtpTime();
-void sendNTPpacket(IPAddress &address);
-
-//IO Pin Constants
+//IO Pin Constants For OLED Breakout Boards
 //Digit 0
 #define PIN_RESET_0 12
 #define PIN_DC_0    22
@@ -67,12 +78,11 @@ MicroOLED oled1(PIN_RESET_1, PIN_DC_1, PIN_CS_1);
 MicroOLED oled2(PIN_RESET_2, PIN_DC_2, PIN_CS_2);
 MicroOLED oled3(PIN_RESET_3, PIN_DC_3, PIN_CS_3);
 
-bool updateTime=1;
 byte old_minute=0,old_hour=0;
-
 time_t prev = 0, prevNow=0;
 
-void setup() {
+void setup(void)
+{
   Serial.begin(115200);
 
   //Setup Displays
@@ -85,27 +95,31 @@ void setup() {
   oled3.begin();
   oled3.clear(PAGE);
   
-  // Connect to WiFi
-  WiFi.begin(ssid, pass);
-
-  pinMode(5,OUTPUT);  //Use the built in LED for WiFi Connection Status
-  bool state = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    state = !state;
-    digitalWrite(5,state);
-  }
-  digitalWrite(5,HIGH);
-
+  //Start WiFi Manager
+  WiFiManager wifiManager;
+  wifiManager.autoConnect("ESP32 Clock");
+  
+  //Print WiFi Debug
   Serial.print("IP number assigned by DHCP is ");
   Serial.println(WiFi.localIP());
   Serial.println("Starting UDP");
   Udp.begin(localPort);
+
   Serial.println("waiting for sync");
+
+  //Try to get time from NTP Server
+  byte attempt = 0;
+  for(byte i=0;i<5;i++)
+  {
+    Serial.println("attempt:"+String(i+1));
+    if(getNtpTime() != 0) break;
+    delay(1000);
+  }
+  
   setSyncProvider(getNtpTime);
   setSyncInterval(300);
-
+  
+  
   //Display Current Time
   Update_Digit(oled0,hourFormat12()/10,32);
   Update_Digit(oled1,hourFormat12()%10,32);
@@ -113,11 +127,11 @@ void setup() {
   Update_Digit(oled3,minute()%10,32);
   prev = now();
   prevNow = now()/60;
+  
 }
 
-void loop() {
-  yield();  //Let the ESP32 handle the wifi stack
-
+void loop(void)
+{
   //Print the current time to Serial (debugging)
   if(now() != prevNow)
   {
@@ -138,10 +152,11 @@ void loop() {
     //Update Display
     for(byte i=0;i<33;i++)
     {
-      if(hour() != old_hour)  //Does hour need to be updated?
+      if(hourFormat12() != old_hour)  //Does hour need to be updated?
       {
-        if((hour()/10)!= old_hour/10) //Which hour digit needs to update? Both?
+        if((hourFormat12()/10)!= old_hour/10) //Which hour digit needs to update? Both?
         {
+          
           Update_Digit(oled0,hourFormat12()/10,i);
           Update_Digit(oled1,hourFormat12()%10,i);
         }
@@ -167,7 +182,7 @@ void loop() {
       }
       delay(5); //Wait 5ms to slow down the animations
     }
-    old_hour = hour();
+    old_hour = hourFormat12();
     old_minute = minute();
   }
 }
@@ -182,7 +197,7 @@ void Update_Digit(MicroOLED &oled,byte number, byte i)
       if(i<17)
       {
         oled.rectFill(A_X+(64-i*4),A_Y,4,22); //A
-        oled.rectFill(A_X-(i*3.6),A_Y,4,22); //A
+        oled.rectFill(A_X-(i*3.6),A_Y,4,22);  //A
         oled.rectFill(B_X,B_Y,22,4); //B
         oled.rectFill(C_X,C_Y,22,4); //C
         oled.rectFill(E_X+(32-i*2),E_Y,22,4); //E
@@ -292,7 +307,6 @@ void Update_Digit(MicroOLED &oled,byte number, byte i)
   oled.display();
 }
 
-
 /*-------- NTP code ----------*/
 
 const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
@@ -322,10 +336,12 @@ time_t getNtpTime()
       secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
       secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
       secsSince1900 |= (unsigned long)packetBuffer[43];
-      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
+
+      utc = secsSince1900 - 2208988800UL;
+      return myTZ.toLocal(utc, &tcr); //Return local time (with time change rules)
     }
   }
-  Serial.println("No NTP Response :-(");
+  Serial.println("No NTP Response :(");
   return 0; // return 0 if unable to get the time
 }
 
