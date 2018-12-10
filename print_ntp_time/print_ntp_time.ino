@@ -3,6 +3,9 @@
 #include <WiFiUdp.h>
 #include <Timezone.h>     //https://github.com/JChristensen/Timezone
 
+const char ssid[] = "----------------";
+const char pass[] = "----------------";
+
 //Define Daylight Savings Time Rules
 //US Mountain Time Zone
 TimeChangeRule myDST = {"MDT", Second, Sun, Mar, 2, -360};    //Daylight time = UTC - 6 hours
@@ -25,7 +28,7 @@ void setup(void)
   Serial.begin(115200);
 
 
-  WiFi.begin("esp32devnet","password");
+  WiFi.begin(ssid,pass);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
